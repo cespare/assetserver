@@ -1,70 +1,83 @@
 package assetserver
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"math/big"
 	"mime"
 	"net/http"
 	"path"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
-
-	"github.com/tv42/zbase32"
 )
 
 type Server struct {
 	fsys fs.FS
 
-	mu sync.Mutex
-	// TODO: Use generic sync.Map when that exists.
-	cache map[string]*fileInfo // nil in dev mode
+	// An rwmutex seems appropriate here: once we've loaded all the assets,
+	// we never lock the mutex again.
+	mu    sync.RWMutex
+	cache map[string]*atomic.Value // of fileInfo
 }
 
 type fileInfo struct {
-	hash        string
+	// We assume the file is unchanged if the mtime+size are the same.
+	mtime int64 // as unix nano
+	size  int64
+
+	tag         string
 	contentType string
 }
 
-func NewProd(fsys fs.FS) *Server {
+func New(fsys fs.FS) *Server {
 	return &Server{
 		fsys:  fsys,
-		cache: make(map[string]*fileInfo),
+		cache: make(map[string]*atomic.Value),
 	}
 }
 
-func NewDev(fsys fs.FS) *Server {
-	return &Server{
-		fsys: fsys,
+func (s *Server) open(name string) (seekerFile, error) {
+	f, err := s.fsys.Open(name)
+	if err != nil {
+		return nil, err
 	}
+	return f.(seekerFile), nil
 }
 
-func (s *Server) HashName(name string) (string, error) {
-	info, err := s.infoCached(name)
+func (s *Server) Tag(name string) (string, error) {
+	f, err := s.open(name)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	info, err := s.getInfo(name, f)
 	if err != nil {
 		return "", err
 	}
 	dir, base := path.Split(name)
 	if i := strings.LastIndexByte(base, '.'); i >= 0 {
 		// name.xxxxxxxxxxxxx.ext
-		base = name[:i] + "." + info.hash + name[i:]
+		base = base[:i] + "." + info.tag + base[i:]
 	} else {
 		// name.xxxxxxxxxxxxx
-		base = name + "." + info.hash
+		base += "." + info.tag
 	}
 	return path.Join(dir, base), nil
 }
 
-func removeNameHash(s string) (h, name string) {
+func removeTag(s string) (h, name string) {
 	dir, base := path.Split(s)
 	j := strings.LastIndexByte(base, '.')
 	if j < 0 {
 		return "", s
 	}
-	if h := base[j+1:]; isHash(h) {
+	if h := base[j+1:]; isTag(h) {
 		// name.xxxxxxxxxxxxxxxx
 		return h, path.Join(dir, base[:j])
 	}
@@ -72,91 +85,148 @@ func removeNameHash(s string) (h, name string) {
 	if i < 0 {
 		return "", s
 	}
-	if h := base[i+1 : j]; isHash(h) {
+	if h := base[i+1 : j]; isTag(h) {
 		// name.xxxxxxxxxxxxxxxx.ext
 		return h, path.Join(dir, base[:i]+base[j:])
 	}
 	return "", s
 }
 
-const hashBytes = 8
+// To make the tag strings as short as possible but still easy to read (no
+// special characters), use a base62 encoding with alphabet {0-9, a-z, A-Z}.
+// We'll generate 10 characters of output for ~60 bits of total output size.
+
+const tagLen = 10
 
 var (
-	hashLen      = zbase32.EncodedLen(hashBytes)
-	zbase32Bytes [256]bool
+	sixtyTwo   = big.NewInt(62)
+	alphabet62 string
+	inAlphabet [256]bool
 )
 
 func init() {
-	const zbase32Alphabet = "ybndrfg8ejkmcpqxot1uwisza345h769"
-	for i := 0; i < len(zbase32Alphabet); i++ {
-		zbase32Bytes[zbase32Alphabet[i]] = true
+	var alph []byte
+	for b := byte('0'); b <= '9'; b++ {
+		alph = append(alph, b)
 	}
+	for b := byte('a'); b <= 'z'; b++ {
+		alph = append(alph, b)
+	}
+	for b := byte('A'); b <= 'Z'; b++ {
+		alph = append(alph, b)
+	}
+	if len(alph) != 62 {
+		panic("bad alphabet")
+	}
+	for _, b := range alph {
+		inAlphabet[b] = true
+	}
+	alphabet62 = string(alph)
 }
 
-func isHash(s string) bool {
-	if len(s) != hashLen {
+func makeTag(b []byte) string {
+	n := new(big.Int).SetBytes(b[:8]) // need ~60 bits
+	m := new(big.Int)
+	out := make([]byte, tagLen)
+	for i := range out {
+		n.DivMod(n, sixtyTwo, m)
+		out[i] = alphabet62[m.Int64()]
+	}
+	return string(out)
+}
+
+func isTag(s string) bool {
+	if len(s) != tagLen {
 		return false
 	}
 	for i := 0; i < len(s); i++ {
-		if !zbase32Bytes[s[i]] {
+		if !inAlphabet[s[i]] {
 			return false
 		}
 	}
 	return true
 }
 
-func (s *Server) infoCached(name string) (*fileInfo, error) {
-	s.mu.Lock()
-	info, ok := s.cache[name]
-	s.mu.Unlock()
-	if ok {
-		return info, nil
-	}
-	// TODO: We could single-flight this.
-	h, err := s.hash(name)
+type seekerFile interface {
+	fs.File
+	io.Seeker
+}
+
+// getInfo retrieves the fileInfo summary of f, from cache if possible.
+// The info matches the contents of f as gauged by the size and mtime,
+// unless the file is changing as its being read
+// (in which case all bets are off).
+func (s *Server) getInfo(name string, f seekerFile) (fileInfo, error) {
+	fi, err := f.Stat()
 	if err != nil {
-		return nil, err
+		return fileInfo{}, err
 	}
-	ct, err := s.sniffContentType(name)
-	if err != nil {
-		return nil, err
-	}
-	info = &fileInfo{hash: h, contentType: ct}
-	if s.cache != nil {
+	s.mu.RLock()
+	v, ok := s.cache[name]
+	s.mu.RUnlock()
+	if !ok {
 		s.mu.Lock()
-		s.cache[name] = info
+		v, ok = s.cache[name]
+		if !ok {
+			v = new(atomic.Value)
+			v.Store(fileInfo{})
+			s.cache[name] = v
+		}
 		s.mu.Unlock()
 	}
+
+	info := v.Load().(fileInfo)
+	if fi.Size() == info.size && fi.ModTime().UnixNano() == info.mtime {
+		return info, nil
+	}
+
+	// The info doesn't match. Reload it from the file and then store it in
+	// the cache.
+	info, err = s.readInfo(f)
+	if err != nil {
+		return fileInfo{}, err
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return fileInfo{}, err
+	}
+	v.Store(info)
 	return info, nil
 }
 
-func (s *Server) hash(name string) (string, error) {
-	f, err := s.fsys.Open(name)
+func (s *Server) readInfo(f seekerFile) (fileInfo, error) {
+	var fi fileInfo
+	stat, err := f.Stat()
 	if err != nil {
-		return "", err
+		return fi, err
 	}
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return zbase32.EncodeToString(h.Sum(nil)[:hashBytes]), nil
-}
+	fi.mtime = stat.ModTime().UnixNano()
+	fi.size = stat.Size()
 
-func (s *Server) sniffContentType(name string) (string, error) {
-	if ctype := mime.TypeByExtension(path.Ext(name)); ctype != "" {
-		return ctype, nil
+	h := sha256.New()
+	fi.contentType = mime.TypeByExtension(path.Ext(stat.Name()))
+	if fi.contentType != "" {
+		if _, err := io.Copy(h, f); err != nil {
+			return fi, err
+		}
+	} else {
+		var sniffBuf bytes.Buffer
+		// http.DetectContentType uses at most 512 bytes.
+		_, err := io.CopyN(io.MultiWriter(h, &sniffBuf), f, 512)
+		switch err {
+		case nil:
+			// There's more data to hash.
+			if _, err := io.Copy(h, f); err != nil {
+				return fi, err
+			}
+		case io.EOF:
+			// Read the whole file.
+		default:
+			return fi, err
+		}
+		fi.contentType = http.DetectContentType(sniffBuf.Bytes())
 	}
-	f, err := s.fsys.Open(name)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	var buf [512]byte
-	n, err := io.ReadFull(f, buf[:])
-	if err != nil {
-		return "", err
-	}
-	return http.DetectContentType(buf[:n]), nil
+	fi.tag = makeTag(h.Sum(nil))
+	return fi, nil
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -172,57 +242,39 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	name = path.Clean(name)[1:]
 
-	var reqHash string
-	reqHash, name = removeNameHash(name)
-	info, err := s.infoCached(name)
-	if err != nil {
-		writeFSError(w, r, err)
-		return
-	}
-	if reqHash != info.hash {
-		http.NotFound(w, r)
-		return
-	}
+	var tag string
+	tag, name = removeTag(name)
 
-	f, err := s.fsys.Open(name)
+	f, err := s.open(name)
 	if err != nil {
 		writeFSError(w, r, err)
 		return
 	}
 	defer f.Close()
-
-	stat, err := f.Stat()
+	info, err := s.getInfo(name, f)
 	if err != nil {
 		writeFSError(w, r, err)
 		return
 	}
-	if stat.IsDir() {
-		// Don't expose any information about directories.
-		http.NotFound(w, r)
-		return
-	}
 
-	content, ok := f.(io.ReadSeeker)
-	if !ok {
-		// TODO: explain hacks
-		content = &sizeReadSeeker{r: f, size: stat.Size()}
-	}
 	var maxAge time.Duration
-	if reqHash == "" {
+	if tag == "" {
 		maxAge = 10 * time.Minute
 	} else {
 		maxAge = 365 * 24 * time.Hour
 	}
 	h := w.Header()
 	h.Set("Cache-Control", fmt.Sprintf("max-age=%d", int64(maxAge.Seconds())))
-	h.Set("ETag", `"`+info.hash+`"`)
+	h.Set("ETag", `"`+info.tag+`"`)
 	if info.contentType != "" {
 		h.Set("Content-Type", info.contentType)
 	} else {
 		h["Content-Type"] = nil // prevent ServeContent from sniffing
 	}
-	http.ServeContent(w, r, stat.Name(), stat.ModTime(), content)
+	http.ServeContent(w, r, name, time.Unix(0, info.mtime), f)
 }
+
+var errFileInfoSync = errors.New("cached fileInfo is out of sync with opened file")
 
 func writeFSError(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, fs.ErrNotExist) {
@@ -233,53 +285,4 @@ func writeFSError(w http.ResponseWriter, r *http.Request, err error) {
 	// That generally isn't helpful in this domain and it leaks information
 	// about a misconfiguration in the system.
 	http.Error(w, "500 Internal Server Error", 500)
-}
-
-func fakeReadSeeker(f fs.File) (io.ReadSeeker, error) {
-	stat, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	return &sizeReadSeeker{r: f, size: stat.Size()}, nil
-}
-
-type sizeReadSeeker struct {
-	r    io.Reader
-	size int64 // total file size
-
-	n   int64 // how many bytes have been read
-	end bool  // did we "seek" to the end?
-}
-
-func (r *sizeReadSeeker) Read(b []byte) (int, error) {
-	if r.end {
-		return 0, io.EOF
-	}
-	n, err := r.r.Read(b)
-	r.n += int64(n)
-	return n, err
-}
-
-var errSeek = errors.New("unsupported seek operation")
-
-func (r *sizeReadSeeker) Seek(offset int64, whence int) (int64, error) {
-	if offset != 0 {
-		return 0, errSeek
-	}
-	// No seeking after reading has started.
-	if r.n > 0 {
-		return 0, errSeek
-	}
-	switch whence {
-	case io.SeekStart:
-		r.end = false
-		return 0, nil
-	case io.SeekCurrent:
-		return 0, nil
-	case io.SeekEnd:
-		r.end = true
-		return r.size, nil
-	default:
-		return 0, errors.New("bad whence value for seek")
-	}
 }
