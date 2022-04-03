@@ -236,7 +236,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.URL.Path
-	if !strings.HasPrefix(name, "/") {
+	if name == "/" || !strings.HasPrefix(name, "/") {
 		http.NotFound(w, r)
 		return
 	}
@@ -256,6 +256,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeFSError(w, r, err)
 		return
 	}
+	// If the tag is wrong/outdated, 404.
+	if tag != "" && tag != info.tag {
+		http.NotFound(w, r)
+		return
+	}
 
 	var maxAge time.Duration
 	if tag == "" {
@@ -266,15 +271,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
 	h.Set("Cache-Control", fmt.Sprintf("max-age=%d", int64(maxAge.Seconds())))
 	h.Set("ETag", `"`+info.tag+`"`)
-	if info.contentType != "" {
-		h.Set("Content-Type", info.contentType)
-	} else {
-		h["Content-Type"] = nil // prevent ServeContent from sniffing
+	// Only set Content-Type if it wasn't set by the caller.
+	if _, ok := h["Content-Type"]; !ok {
+		if info.contentType != "" {
+			h.Set("Content-Type", info.contentType)
+		} else {
+			h["Content-Type"] = nil // prevent ServeContent from sniffing
+		}
 	}
 	http.ServeContent(w, r, name, time.Unix(0, info.mtime), f)
 }
-
-var errFileInfoSync = errors.New("cached fileInfo is out of sync with opened file")
 
 func writeFSError(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, fs.ErrNotExist) {
