@@ -1,3 +1,4 @@
+// FIXME: doc
 package assetserver
 
 import (
@@ -17,6 +18,7 @@ import (
 	"time"
 )
 
+// FIXME: doc
 type Server struct {
 	fsys fs.FS
 
@@ -35,6 +37,7 @@ type fileInfo struct {
 	contentType string
 }
 
+// FIXME: doc
 func New(fsys fs.FS) *Server {
 	return &Server{
 		fsys:  fsys,
@@ -50,7 +53,9 @@ func (s *Server) open(name string) (seekerFile, error) {
 	return f.(seekerFile), nil
 }
 
+// FIXME: doc
 func (s *Server) Tag(name string) (string, error) {
+	// TODO: Add a new happy path where we only call stat, not open.
 	f, err := s.open(name)
 	if err != nil {
 		return "", err
@@ -71,6 +76,7 @@ func (s *Server) Tag(name string) (string, error) {
 	return path.Join(dir, base), nil
 }
 
+// FIXME: doc
 func removeTag(s string) (h, name string) {
 	dir, base := path.Split(s)
 	j := strings.LastIndexByte(base, '.')
@@ -229,6 +235,7 @@ func (s *Server) readInfo(f seekerFile) (fileInfo, error) {
 	return fi, nil
 }
 
+// FIXME: doc
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" && r.Method != "HEAD" {
 		w.Header().Set("Allow", "GET,HEAD")
