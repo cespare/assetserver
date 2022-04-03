@@ -78,6 +78,8 @@ func TestServeHTTPEmbed(t *testing.T) {
 	webtest.TestHandler(t, "testdata/servehttp.txt", s)
 }
 
+// TODO: add test for large file contents (>512 bytes).
+
 func TestPrintHashes(t *testing.T) {
 	t.Skip("un-skip this test to print out all testdata asset hashes")
 	fsys := os.DirFS("testdata/assets")
