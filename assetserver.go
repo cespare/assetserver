@@ -1,4 +1,6 @@
-// FIXME: doc
+// Package assetserver provides a file server for web assets.
+//
+// FIXME: Write more. Document restrictions on underlying fs.
 package assetserver
 
 import (
@@ -18,7 +20,7 @@ import (
 	"time"
 )
 
-// FIXME: doc
+// A Server serves web asset files from a file system.
 type Server struct {
 	fsys fs.FS
 
@@ -37,7 +39,9 @@ type fileInfo struct {
 	contentType string
 }
 
-// FIXME: doc
+// New creates a Server from a file system.
+//
+// The files that are opened from the file system must implement io.Seeker.
 func New(fsys fs.FS) *Server {
 	return &Server{
 		fsys:  fsys,
@@ -45,25 +49,23 @@ func New(fsys fs.FS) *Server {
 	}
 }
 
-func (s *Server) open(name string) (seekerFile, error) {
-	f, err := s.fsys.Open(name)
-	if err != nil {
-		return nil, err
-	}
-	return f.(seekerFile), nil
-}
-
-// FIXME: doc
+// Tag modifies the provided file name to include an asset tag.
+// The tag is based on a hash of the file contents.
+// File names are slash-separated paths as given to the underlying fs.FS.
 func (s *Server) Tag(name string) (string, error) {
-	// TODO: Add a new happy path where we only call stat, not open.
-	f, err := s.open(name)
+	// Happy path: only call stat.
+	info, err := s.tryCachedInfo(name)
 	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	info, err := s.getInfo(name, f)
-	if err != nil {
-		return "", err
+		if err != errNoInfo {
+			return "", err
+		}
+		// No cached info (or it's out of date). Recompute.
+		var f seekerFile
+		f, info, err = s.openWithInfo(name)
+		if err != nil {
+			return "", err
+		}
+		f.Close()
 	}
 	dir, base := path.Split(name)
 	if i := strings.LastIndexByte(base, '.'); i >= 0 {
@@ -76,24 +78,26 @@ func (s *Server) Tag(name string) (string, error) {
 	return path.Join(dir, base), nil
 }
 
-// FIXME: doc
-func removeTag(s string) (h, name string) {
+// removeTag looks for an asset tag as part of a file name and returns the tag
+// and the equivalent name with the tag removed.
+// If the name doesn't include a tag, removeTag returns "", s.
+func removeTag(s string) (tag, name string) {
 	dir, base := path.Split(s)
 	j := strings.LastIndexByte(base, '.')
 	if j < 0 {
 		return "", s
 	}
-	if h := base[j+1:]; isTag(h) {
+	if tag := base[j+1:]; isTag(tag) {
 		// name.xxxxxxxxxxxxxxxx
-		return h, path.Join(dir, base[:j])
+		return tag, path.Join(dir, base[:j])
 	}
 	i := strings.LastIndexByte(base[:j], '.')
 	if i < 0 {
 		return "", s
 	}
-	if h := base[i+1 : j]; isTag(h) {
+	if tag := base[i+1 : j]; isTag(tag) {
 		// name.xxxxxxxxxxxxxxxx.ext
-		return h, path.Join(dir, base[:i]+base[j:])
+		return tag, path.Join(dir, base[:i]+base[j:])
 	}
 	return "", s
 }
@@ -158,14 +162,55 @@ type seekerFile interface {
 	io.Seeker
 }
 
-// getInfo retrieves the fileInfo summary of f, from cache if possible.
-// The info matches the contents of f as gauged by the size and mtime,
-// unless the file is changing as its being read
-// (in which case all bets are off).
-func (s *Server) getInfo(name string, f seekerFile) (fileInfo, error) {
-	fi, err := f.Stat()
+func (s *Server) open(name string) (seekerFile, error) {
+	f, err := s.fsys.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	return f.(seekerFile), nil
+}
+
+var errNoInfo = errors.New("cached info for file is out of date or nonexistent")
+
+// tryCachedInfo returns the cached info for the named file if it matches the
+// contents of the file as gauged by the size and mtime.
+// Otherwise it returns errNoInfo.
+func (s *Server) tryCachedInfo(name string) (fileInfo, error) {
+	fi, err := fs.Stat(s.fsys, name)
 	if err != nil {
 		return fileInfo{}, err
+	}
+	s.mu.RLock()
+	v, ok := s.cache[name]
+	s.mu.RUnlock()
+	if !ok {
+		return fileInfo{}, errNoInfo
+	}
+	info := v.Load().(fileInfo)
+	if fi.Size() != info.size || fi.ModTime().UnixNano() != info.mtime {
+		return fileInfo{}, errNoInfo
+	}
+	return info, nil
+}
+
+// openWithInfo opens the named file and also retrieves its fileInfo summar,
+// from cache if possible.
+// The info matches the contents of the file as gauged by the size and mtime,
+// unless the file is changing as its being read (in which case all bets are off).
+func (s *Server) openWithInfo(name string) (f seekerFile, info fileInfo, err error) {
+	fv, err := s.fsys.Open(name)
+	if err != nil {
+		return nil, info, err
+	}
+	f = fv.(seekerFile)
+	defer func() {
+		if err != nil {
+			f.Close()
+		}
+	}()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, info, err
 	}
 	s.mu.RLock()
 	v, ok := s.cache[name]
@@ -181,22 +226,22 @@ func (s *Server) getInfo(name string, f seekerFile) (fileInfo, error) {
 		s.mu.Unlock()
 	}
 
-	info := v.Load().(fileInfo)
+	info = v.Load().(fileInfo)
 	if fi.Size() == info.size && fi.ModTime().UnixNano() == info.mtime {
-		return info, nil
+		return f, info, nil
 	}
 
 	// The info doesn't match. Reload it from the file and then store it in
 	// the cache.
 	info, err = s.readInfo(f)
 	if err != nil {
-		return fileInfo{}, err
+		return nil, info, err
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return fileInfo{}, err
+		return nil, info, err
 	}
 	v.Store(info)
-	return info, nil
+	return f, info, nil
 }
 
 func (s *Server) readInfo(f seekerFile) (fileInfo, error) {
@@ -236,6 +281,8 @@ func (s *Server) readInfo(f seekerFile) (fileInfo, error) {
 }
 
 // FIXME: doc
+// Requests for the tagged file are resolved to the original name
+// and served with a long-term max-age in the Cache-Control header.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" && r.Method != "HEAD" {
 		w.Header().Set("Allow", "GET,HEAD")
@@ -252,17 +299,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var tag string
 	tag, name = removeTag(name)
 
-	f, err := s.open(name)
+	f, info, err := s.openWithInfo(name)
 	if err != nil {
 		writeFSError(w, r, err)
 		return
 	}
 	defer f.Close()
-	info, err := s.getInfo(name, f)
-	if err != nil {
-		writeFSError(w, r, err)
-		return
-	}
 	// If the tag is wrong/outdated, 404.
 	if tag != "" && tag != info.tag {
 		http.NotFound(w, r)
