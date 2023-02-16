@@ -1,6 +1,4 @@
 // Package assetserver provides a file server for web assets.
-//
-// FIXME: Write more. Document restrictions on underlying fs.
 package assetserver
 
 import (
@@ -20,7 +18,42 @@ import (
 	"time"
 )
 
-// A Server serves web asset files from a file system.
+// A Server serves HTTP requests with the contents of a file system.
+//
+// The response headers are set appropriately for web assets so that they are
+// cached effectively:
+//
+//   - The ETag header is set with a hash of the file contents
+//   - The Cache-Control header is set to max-age of 10 minutes
+//
+// If the requested file is tagged (see [Server.Tag]), the tag is removed before
+// the file is retrieved. Tagged files are served with a Cache-Control max-age
+// of a year.
+//
+// With these headers, Server implements an effective caching strategy for
+// static assets. If the assets are not tagged, the Cache-Control means that
+// clients shouldn't request the same file for at least 10 minutes. When they do
+// request the file, assuming it has not changed, then typically Server does not
+// need to re-send the contents after comparing the ETag value against the
+// If-None-Match header from the client. If the assets are tagged, then the
+// caching is near-optimal because even the every-10-minute refresh is avoided.
+//
+// In the following cases, Server returns a 404 Not Found response:
+//
+//   - If the requested file doesn't exist in the file system
+//   - If the requested file is a directory
+//   - If the requested name is tagged but the tag does not match the
+//     corresponding file
+//
+// For other errors, Server sends a 500 Internal Server Error response.
+//
+// A Server is similar to the handler created by [http.FileServer] but is better
+// suited for static web assets. Some key differences include:
+//
+//   - Caching-friendly headers
+//   - No directory listings
+//   - No automatic index.html redirect
+//   - Internal errors (such as permission errors) are not exposed
 type Server struct {
 	fsys fs.FS
 
@@ -41,7 +74,9 @@ type fileInfo struct {
 
 // New creates a Server from a file system.
 //
-// The files that are opened from the file system must implement io.Seeker.
+// The files that are opened from the file system must implement [io.Seeker].
+// The [fs.FS] implementations which satisfy this requirement include [embed.FS]
+// and the result of calling [os.DirFS].
 func New(fsys fs.FS) *Server {
 	return &Server{
 		fsys:  fsys,
@@ -51,7 +86,7 @@ func New(fsys fs.FS) *Server {
 
 // Tag modifies the provided file name to include an asset tag.
 // The tag is based on a hash of the file contents.
-// File names are slash-separated paths as given to the underlying fs.FS.
+// File names are slash-separated paths as given to the underlying [fs.FS].
 func (s *Server) Tag(name string) (string, error) {
 	// Happy path: only call stat.
 	info, err := s.tryCachedInfo(name)
@@ -180,6 +215,9 @@ func (s *Server) tryCachedInfo(name string) (*fileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	if fi.IsDir() {
+		return nil, fs.ErrNotExist
+	}
 	s.mu.RLock()
 	v, ok := s.cache[name]
 	s.mu.RUnlock()
@@ -212,6 +250,9 @@ func (s *Server) openWithInfo(name string) (f seekerFile, info *fileInfo, err er
 	if err != nil {
 		return nil, nil, err
 	}
+	if fi.IsDir() {
+		return nil, fs.ErrNotExist
+	}
 	s.mu.RLock()
 	v, ok := s.cache[name]
 	s.mu.RUnlock()
@@ -224,6 +265,8 @@ func (s *Server) openWithInfo(name string) (f seekerFile, info *fileInfo, err er
 		}
 		s.mu.Unlock()
 	}
+
+	// FIXME: singleflight
 
 	info = v.Load()
 	if fi.Size() == info.size && fi.ModTime().UnixNano() == info.mtime {
@@ -280,9 +323,7 @@ func (s *Server) readInfo(f seekerFile) (*fileInfo, error) {
 	return fi, nil
 }
 
-// FIXME: doc
-// Requests for the tagged file are resolved to the original name
-// and served with a long-term max-age in the Cache-Control header.
+// ServeHTTP serves file system contents matching the request.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" && r.Method != "HEAD" {
 		w.Header().Set("Allow", "GET,HEAD")

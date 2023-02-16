@@ -83,7 +83,8 @@ func TestServeHTTPEmbed(t *testing.T) {
 	webtest.TestHandler(t, "testdata/servehttp.txt", s)
 }
 
-// TODO: test for files that are changing
+// FIXME: test for files that are changing
+// FIXME: test dir requests
 
 // Exercise content sniffing and hashing on files larger than 512 bytes.
 func TestServeLargeFiles(t *testing.T) {
