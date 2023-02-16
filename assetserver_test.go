@@ -1,19 +1,27 @@
 package assetserver
 
 import (
+	"context"
 	"crypto/sha256"
 	"embed"
 	"fmt"
+	"io"
 	"io/fs"
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/cespare/webtest"
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/renameio"
+	"golang.org/x/sync/errgroup"
 )
 
 func TestTag(t *testing.T) {
@@ -83,8 +91,120 @@ func TestServeHTTPEmbed(t *testing.T) {
 	webtest.TestHandler(t, "testdata/servehttp.txt", s)
 }
 
-// FIXME: test for files that are changing
-// FIXME: parallel tests to trigger the race detector
+// This tests the case that files are changing and being requested by multiple
+// callers in parallel (so it's a good target for the race detector).
+func TestChangingFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create 10 files: a.txt, b.txt, ..., j.txt.
+	// Each file contains the letter of the file (a, b, ..., j)
+	// and an incrementing sequence number starting at 0.
+	writeFile := func(letter rune, seq int) {
+		t.Helper()
+		name := filepath.Join(dir, string(letter)+".txt")
+		text := fmt.Sprintf("%c %d\n", letter, seq)
+		if err := renameio.WriteFile(name, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for letter := 'a'; letter <= 'j'; letter++ {
+		writeFile(letter, 0)
+	}
+	s := New(os.DirFS(dir))
+	server := httptest.NewServer(s)
+	defer server.Close()
+
+	fetch := func(letter rune) (seq int, err error) {
+		url := fmt.Sprintf("%s/%c.txt", server.URL, letter)
+		resp, err := http.Get(url)
+		if err != nil {
+			return 0, err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != 200 {
+			return 0, fmt.Errorf("non-200 response: %d", resp.StatusCode)
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return 0, fmt.Errorf("error reading response body: %s", err)
+		}
+
+		parts := strings.Fields(string(body))
+		if len(parts) != 2 || parts[0] != string(letter) {
+			return 0, fmt.Errorf("unexpected response %q for letter %c", body, letter)
+		}
+		seq, err = strconv.Atoi(parts[1])
+		if err != nil {
+			return 0, fmt.Errorf("bad sequence number %q for letter %c", parts[1], letter)
+		}
+		return seq, nil
+	}
+
+	start := make(chan struct{})
+	eg, ctx := errgroup.WithContext(context.Background())
+	for i := 0; i < 10; i++ {
+		eg.Go(func() error {
+			<-start
+			lastSeq := make(map[rune]int)
+			timer := time.NewTimer(0)
+			<-timer.C
+			defer timer.Stop()
+			letter := 'a'
+			for {
+				seq, err := fetch(letter)
+				if err != nil {
+					return err
+				}
+				prev := lastSeq[letter]
+				if seq < prev {
+					return fmt.Errorf("for letter %c, went from seq=%d to %d", letter, prev, seq)
+				}
+				if letter == 'j' && seq == 10 {
+					return nil
+				}
+				lastSeq[letter] = seq
+
+				if letter == 'j' {
+					letter = 'a'
+				} else {
+					letter++
+				}
+
+				timer.Reset(3 * time.Millisecond)
+				select {
+				case <-timer.C:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+		})
+	}
+	close(start)
+
+	eg.Go(func() error {
+		timer := time.NewTimer(0)
+		<-timer.C
+		defer timer.Stop()
+		for seq := 1; seq <= 10; seq++ {
+			for letter := 'a'; letter <= 'j'; letter++ {
+				writeFile(letter, seq)
+				timer.Reset(time.Millisecond)
+				select {
+				case <-timer.C:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+		}
+		return nil
+	})
+
+	if err := eg.Wait(); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // Exercise content sniffing and hashing on files larger than 512 bytes.
 func TestServeLargeFiles(t *testing.T) {
