@@ -27,7 +27,7 @@ type Server struct {
 	// An rwmutex seems appropriate here: once we've loaded all the assets,
 	// we never lock the mutex again.
 	mu    sync.RWMutex
-	cache map[string]*atomic.Value // of fileInfo
+	cache map[string]atomic.Pointer[fileInfo]
 }
 
 type fileInfo struct {
@@ -45,7 +45,7 @@ type fileInfo struct {
 func New(fsys fs.FS) *Server {
 	return &Server{
 		fsys:  fsys,
-		cache: make(map[string]*atomic.Value),
+		cache: make(map[string]atomic.Pointer[fileInfo]),
 	}
 }
 
@@ -175,32 +175,32 @@ var errNoInfo = errors.New("cached info for file is out of date or nonexistent")
 // tryCachedInfo returns the cached info for the named file if it matches the
 // contents of the file as gauged by the size and mtime.
 // Otherwise it returns errNoInfo.
-func (s *Server) tryCachedInfo(name string) (fileInfo, error) {
+func (s *Server) tryCachedInfo(name string) (*fileInfo, error) {
 	fi, err := fs.Stat(s.fsys, name)
 	if err != nil {
-		return fileInfo{}, err
+		return nil, err
 	}
 	s.mu.RLock()
 	v, ok := s.cache[name]
 	s.mu.RUnlock()
 	if !ok {
-		return fileInfo{}, errNoInfo
+		return nil, errNoInfo
 	}
-	info := v.Load().(fileInfo)
+	info := v.Load()
 	if fi.Size() != info.size || fi.ModTime().UnixNano() != info.mtime {
-		return fileInfo{}, errNoInfo
+		return nil, errNoInfo
 	}
 	return info, nil
 }
 
-// openWithInfo opens the named file and also retrieves its fileInfo summar,
+// openWithInfo opens the named file and also retrieves its fileInfo summary,
 // from cache if possible.
 // The info matches the contents of the file as gauged by the size and mtime,
 // unless the file is changing as its being read (in which case all bets are off).
-func (s *Server) openWithInfo(name string) (f seekerFile, info fileInfo, err error) {
+func (s *Server) openWithInfo(name string) (f seekerFile, info *fileInfo, err error) {
 	fv, err := s.fsys.Open(name)
 	if err != nil {
-		return nil, info, err
+		return nil, nil, err
 	}
 	f = fv.(seekerFile)
 	defer func() {
@@ -210,7 +210,7 @@ func (s *Server) openWithInfo(name string) (f seekerFile, info fileInfo, err err
 	}()
 	fi, err := f.Stat()
 	if err != nil {
-		return nil, info, err
+		return nil, nil, err
 	}
 	s.mu.RLock()
 	v, ok := s.cache[name]
@@ -219,14 +219,13 @@ func (s *Server) openWithInfo(name string) (f seekerFile, info fileInfo, err err
 		s.mu.Lock()
 		v, ok = s.cache[name]
 		if !ok {
-			v = new(atomic.Value)
-			v.Store(fileInfo{})
+			v.Store(new(fileInfo)) // FIXME(caleb): weird
 			s.cache[name] = v
 		}
 		s.mu.Unlock()
 	}
 
-	info = v.Load().(fileInfo)
+	info = v.Load()
 	if fi.Size() == info.size && fi.ModTime().UnixNano() == info.mtime {
 		return f, info, nil
 	}
@@ -235,29 +234,30 @@ func (s *Server) openWithInfo(name string) (f seekerFile, info fileInfo, err err
 	// the cache.
 	info, err = s.readInfo(f)
 	if err != nil {
-		return nil, info, err
+		return nil, nil, err
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return nil, info, err
+		return nil, nil, err
 	}
 	v.Store(info)
 	return f, info, nil
 }
 
-func (s *Server) readInfo(f seekerFile) (fileInfo, error) {
-	var fi fileInfo
+func (s *Server) readInfo(f seekerFile) (*fileInfo, error) {
 	stat, err := f.Stat()
 	if err != nil {
-		return fi, err
+		return nil, err
 	}
-	fi.mtime = stat.ModTime().UnixNano()
-	fi.size = stat.Size()
+	fi := &fileInfo{
+		mtime: stat.ModTime().UnixNano(),
+		size:  stat.Size(),
+	}
 
 	h := sha256.New()
 	fi.contentType = mime.TypeByExtension(path.Ext(stat.Name()))
 	if fi.contentType != "" {
 		if _, err := io.Copy(h, f); err != nil {
-			return fi, err
+			return nil, err
 		}
 	} else {
 		var sniffBuf bytes.Buffer
@@ -267,12 +267,12 @@ func (s *Server) readInfo(f seekerFile) (fileInfo, error) {
 		case nil:
 			// There's more data to hash.
 			if _, err := io.Copy(h, f); err != nil {
-				return fi, err
+				return nil, err
 			}
 		case io.EOF:
 			// Read the whole file.
 		default:
-			return fi, err
+			return nil, err
 		}
 		fi.contentType = http.DetectContentType(sniffBuf.Bytes())
 	}
@@ -328,6 +328,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h["Content-Type"] = nil // prevent ServeContent from sniffing
 		}
 	}
+
+	// TODO: After https://go.dev/issue/51971 is implemented, should
+	// we use http.ServeFileFS?
+
 	http.ServeContent(w, r, name, time.Unix(0, info.mtime), f)
 }
 
