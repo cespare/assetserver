@@ -240,19 +240,19 @@ func (s *Server) openWithInfo(name string) (f seekerFile, info *fileInfo, err er
 	if err != nil {
 		return nil, nil, err
 	}
-	f = fv.(seekerFile)
 	defer func() {
 		if err != nil {
-			f.Close()
+			fv.Close()
 		}
 	}()
-	fi, err := f.Stat()
+	fi, err := fv.Stat()
 	if err != nil {
 		return nil, nil, err
 	}
 	if fi.IsDir() {
-		return nil, fs.ErrNotExist
+		return nil, nil, fs.ErrNotExist
 	}
+	f = fv.(seekerFile)
 	s.mu.RLock()
 	v, ok := s.cache[name]
 	s.mu.RUnlock()

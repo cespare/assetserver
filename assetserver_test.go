@@ -84,7 +84,7 @@ func TestServeHTTPEmbed(t *testing.T) {
 }
 
 // FIXME: test for files that are changing
-// FIXME: test dir requests
+// FIXME: parallel tests to trigger the race detector
 
 // Exercise content sniffing and hashing on files larger than 512 bytes.
 func TestServeLargeFiles(t *testing.T) {

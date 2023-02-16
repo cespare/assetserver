@@ -65,3 +65,12 @@ trimbody ==
 header Cache-Control == max-age=31536000
 header ETag == "Erz6e6ZJsp"
 header Content-Type contains text/html
+
+GET /d
+code == 404
+
+GET /d/
+code == 404
+
+GET /d/sub
+code == 404
