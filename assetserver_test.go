@@ -31,7 +31,9 @@ func TestTag(t *testing.T) {
 		want string
 	}{
 		{"d/style.css", "d/style." + hashTag("style\n") + ".css"},
+		{"/d/style.css", "/d/style." + hashTag("style\n") + ".css"},
 		{"a.js", "a." + hashTag("ajs\n") + ".js"},
+		{"b.min.js", "b." + hashTag("b\n") + ".min.js"},
 		{"d/sub/noext", "d/sub/noext." + hashTag("<!doctype html>\n")},
 	} {
 		got, err := s.Tag(tt.name)
@@ -51,7 +53,9 @@ func TestRemoveTag(t *testing.T) {
 		name string
 	}{
 		{"d/style.abcABC1234.css", "abcABC1234", "d/style.css"},
+		{"/d/style.abcABC1234.css", "abcABC1234", "/d/style.css"},
 		{"a.1231231234.js", "1231231234", "a.js"},
+		{"b.1231231234.min.js", "1231231234", "b.min.js"},
 		{"d/sub/noext.xyzXYZxyzX", "xyzXYZxyzX", "d/sub/noext"},
 
 		{"d/style.abcABC12345.css", "", "d/style.abcABC12345.css"},
@@ -170,6 +174,10 @@ func TestChangingFiles(t *testing.T) {
 					letter = 'a'
 				} else {
 					letter++
+				}
+
+				if _, err := s.Tag(string(letter) + ".txt"); err != nil {
+					return fmt.Errorf("error calling Tag for letter %c", letter)
 				}
 
 				timer.Reset(3 * time.Millisecond)

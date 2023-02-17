@@ -87,7 +87,10 @@ func New(fsys fs.FS) *Server {
 // Tag modifies the provided file name to include an asset tag.
 // The tag is based on a hash of the file contents.
 // File names are slash-separated paths as given to the underlying [fs.FS].
+// If the name starts with a slash, it is removed before retrieving the file.
 func (s *Server) Tag(name string) (string, error) {
+	var hadSlash bool
+	name, hadSlash = strings.CutPrefix(name, "/")
 	// Happy path: only call stat.
 	info, err := s.tryCachedInfo(name)
 	if err != nil {
@@ -103,14 +106,21 @@ func (s *Server) Tag(name string) (string, error) {
 		f.Close()
 	}
 	dir, base := path.Split(name)
-	if i := strings.LastIndexByte(base, '.'); i >= 0 {
+	// We place the tag before the first dot (rather than before the last
+	// dot) because files may have multiple extensions: "x.tar.gz",
+	// "lib.min.js", etc.
+	if i := strings.IndexByte(base, '.'); i >= 0 {
 		// name.xxxxxxxxxxxxx.ext
 		base = base[:i] + "." + info.tag + base[i:]
 	} else {
 		// name.xxxxxxxxxxxxx
 		base += "." + info.tag
 	}
-	return path.Join(dir, base), nil
+	tagged := path.Join(dir, base)
+	if hadSlash {
+		tagged = "/" + tagged
+	}
+	return tagged, nil
 }
 
 // removeTag looks for an asset tag as part of a file name and returns the tag
@@ -118,21 +128,21 @@ func (s *Server) Tag(name string) (string, error) {
 // If the name doesn't include a tag, removeTag returns "", s.
 func removeTag(s string) (tag, name string) {
 	dir, base := path.Split(s)
-	j := strings.LastIndexByte(base, '.')
-	if j < 0 {
-		return "", s
-	}
-	if tag := base[j+1:]; isTag(tag) {
-		// name.xxxxxxxxxxxxxxxx
-		return tag, path.Join(dir, base[:j])
-	}
-	i := strings.LastIndexByte(base[:j], '.')
+	i := strings.IndexByte(base, '.')
 	if i < 0 {
 		return "", s
 	}
-	if tag := base[i+1 : j]; isTag(tag) {
+	if tag := base[i+1:]; isTag(tag) {
+		// name.xxxxxxxxxxxxxxxx
+		return tag, path.Join(dir, base[:i])
+	}
+	j := strings.IndexByte(base[i+1:], '.')
+	if j < 0 {
+		return "", s
+	}
+	if tag := base[i+1 : i+1+j]; isTag(tag) {
 		// name.xxxxxxxxxxxxxxxx.ext
-		return tag, path.Join(dir, base[:i]+base[j:])
+		return tag, path.Join(dir, base[:i]+base[i+1+j:])
 	}
 	return "", s
 }
@@ -225,7 +235,7 @@ func (s *Server) tryCachedInfo(name string) (*fileInfo, error) {
 		return nil, errNoInfo
 	}
 	info := v.Load()
-	if fi.Size() != info.size || fi.ModTime().UnixNano() != info.mtime {
+	if info == nil || fi.Size() != info.size || fi.ModTime().UnixNano() != info.mtime {
 		return nil, errNoInfo
 	}
 	return info, nil
@@ -260,16 +270,13 @@ func (s *Server) openWithInfo(name string) (f seekerFile, info *fileInfo, err er
 		s.mu.Lock()
 		v, ok = s.cache[name]
 		if !ok {
-			v.Store(new(fileInfo)) // FIXME(caleb): weird
 			s.cache[name] = v
 		}
 		s.mu.Unlock()
 	}
 
-	// FIXME: singleflight
-
 	info = v.Load()
-	if fi.Size() == info.size && fi.ModTime().UnixNano() == info.mtime {
+	if info != nil && fi.Size() == info.size && fi.ModTime().UnixNano() == info.mtime {
 		return f, info, nil
 	}
 
