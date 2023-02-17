@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"math/big"
@@ -330,6 +329,11 @@ func (s *Server) readInfo(f seekerFile) (*fileInfo, error) {
 	return fi, nil
 }
 
+const (
+	cacheControlUnversioned = "public, max-age=600"
+	cacheControlVersioned   = "public, max-age=31536000, immutable"
+)
+
 // ServeHTTP serves file system contents matching the request.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" && r.Method != "HEAD" {
@@ -359,14 +363,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var maxAge time.Duration
-	if tag == "" {
-		maxAge = 10 * time.Minute
-	} else {
-		maxAge = 365 * 24 * time.Hour
-	}
 	h := w.Header()
-	h.Set("Cache-Control", fmt.Sprintf("max-age=%d", int64(maxAge.Seconds())))
+	if tag == "" {
+		h.Set("Cache-Control", cacheControlUnversioned)
+	} else {
+		h.Set("Cache-Control", cacheControlVersioned)
+	}
 	h.Set("ETag", `"`+info.tag+`"`)
 	// Only set Content-Type if it wasn't set by the caller.
 	if _, ok := h["Content-Type"]; !ok {
