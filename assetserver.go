@@ -23,19 +23,12 @@ import (
 // cached effectively:
 //
 //   - The ETag header is set with a hash of the file contents
-//   - The Cache-Control header is set to max-age of 1 minute
+//   - The Cache-Control header is set to "public, max-age=60"
 //
 // If the requested file is tagged (see [Server.Tag]), the tag is removed before
-// the file is retrieved. Tagged files are served with a Cache-Control max-age
-// of a year.
+// the file is retrieved. Tagged files are served with a Cache-Control header of
 //
-// With these headers, Server implements an effective caching strategy for
-// static assets. If the assets are not tagged, the Cache-Control means that
-// clients shouldn't request the same file for at least a minute. When they do
-// request the file, assuming it has not changed, then typically Server does not
-// need to re-send the contents after comparing the ETag value against the
-// If-None-Match header from the client. If the assets are tagged, then the
-// caching is near-optimal because even the every-1-minute refresh is avoided.
+//	public, max-age=31536000, immutable
 //
 // In the following cases, Server returns a 404 Not Found response:
 //
@@ -45,14 +38,6 @@ import (
 //     corresponding file
 //
 // For other errors, Server sends a 500 Internal Server Error response.
-//
-// A Server is similar to the handler created by [http.FileServer] but is better
-// suited for static web assets. Some key differences include:
-//
-//   - Caching-friendly headers
-//   - No directory listings
-//   - No automatic index.html redirect
-//   - Internal errors (such as permission errors) are not exposed
 type Server struct {
 	fsys fs.FS
 
