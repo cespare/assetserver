@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -244,7 +243,7 @@ func checkResponseCode(t *testing.T, resp *http.Response, want int) {
 
 func checkResponseBody(t *testing.T, resp *http.Response, want []byte) {
 	t.Helper()
-	got, err := ioutil.ReadAll(resp.Body)
+	got, err := io.ReadAll(resp.Body)
 	if err != nil {
 		// Shouldn't happen due to ResponseRecorder guarantees.
 		t.Fatalf("error reading response body: %s", err)

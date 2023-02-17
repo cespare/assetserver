@@ -44,7 +44,7 @@ type Server struct {
 	// An rwmutex seems appropriate here: once we've loaded all the assets,
 	// we never lock the mutex again.
 	mu    sync.RWMutex
-	cache map[string]atomic.Pointer[fileInfo]
+	cache map[string]*atomic.Pointer[fileInfo]
 }
 
 type fileInfo struct {
@@ -64,7 +64,7 @@ type fileInfo struct {
 func New(fsys fs.FS) *Server {
 	return &Server{
 		fsys:  fsys,
-		cache: make(map[string]atomic.Pointer[fileInfo]),
+		cache: make(map[string]*atomic.Pointer[fileInfo]),
 	}
 }
 
@@ -191,14 +191,6 @@ type seekerFile interface {
 	io.Seeker
 }
 
-func (s *Server) open(name string) (seekerFile, error) {
-	f, err := s.fsys.Open(name)
-	if err != nil {
-		return nil, err
-	}
-	return f.(seekerFile), nil
-}
-
 var errNoInfo = errors.New("cached info for file is out of date or nonexistent")
 
 // tryCachedInfo returns the cached info for the named file if it matches the
@@ -213,12 +205,12 @@ func (s *Server) tryCachedInfo(name string) (*fileInfo, error) {
 		return nil, fs.ErrNotExist
 	}
 	s.mu.RLock()
-	v, ok := s.cache[name]
+	p, ok := s.cache[name]
 	s.mu.RUnlock()
 	if !ok {
 		return nil, errNoInfo
 	}
-	info := v.Load()
+	info := p.Load()
 	if info == nil || fi.Size() != info.size || fi.ModTime().UnixNano() != info.mtime {
 		return nil, errNoInfo
 	}
@@ -248,18 +240,19 @@ func (s *Server) openWithInfo(name string) (f seekerFile, info *fileInfo, err er
 	}
 	f = fv.(seekerFile)
 	s.mu.RLock()
-	v, ok := s.cache[name]
+	p, ok := s.cache[name]
 	s.mu.RUnlock()
 	if !ok {
 		s.mu.Lock()
-		v, ok = s.cache[name]
+		p, ok = s.cache[name]
 		if !ok {
-			s.cache[name] = v
+			p = new(atomic.Pointer[fileInfo])
+			s.cache[name] = p
 		}
 		s.mu.Unlock()
 	}
 
-	info = v.Load()
+	info = p.Load()
 	if info != nil && fi.Size() == info.size && fi.ModTime().UnixNano() == info.mtime {
 		return f, info, nil
 	}
@@ -273,7 +266,7 @@ func (s *Server) openWithInfo(name string) (f seekerFile, info *fileInfo, err er
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return nil, nil, err
 	}
-	v.Store(info)
+	p.Store(info)
 	return f, info, nil
 }
 
@@ -323,7 +316,7 @@ const (
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" && r.Method != "HEAD" {
 		w.Header().Set("Allow", "GET,HEAD")
-		http.Error(w, "405 Method Not Allowed", 405)
+		http.Error(w, "405 Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	name := r.URL.Path
