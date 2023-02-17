@@ -23,7 +23,7 @@ import (
 // cached effectively:
 //
 //   - The ETag header is set with a hash of the file contents
-//   - The Cache-Control header is set to max-age of 10 minutes
+//   - The Cache-Control header is set to max-age of 1 minute
 //
 // If the requested file is tagged (see [Server.Tag]), the tag is removed before
 // the file is retrieved. Tagged files are served with a Cache-Control max-age
@@ -31,11 +31,11 @@ import (
 //
 // With these headers, Server implements an effective caching strategy for
 // static assets. If the assets are not tagged, the Cache-Control means that
-// clients shouldn't request the same file for at least 10 minutes. When they do
+// clients shouldn't request the same file for at least a minute. When they do
 // request the file, assuming it has not changed, then typically Server does not
 // need to re-send the contents after comparing the ETag value against the
 // If-None-Match header from the client. If the assets are tagged, then the
-// caching is near-optimal because even the every-10-minute refresh is avoided.
+// caching is near-optimal because even the every-1-minute refresh is avoided.
 //
 // In the following cases, Server returns a 404 Not Found response:
 //
@@ -83,8 +83,8 @@ func New(fsys fs.FS) *Server {
 	}
 }
 
-// Tag modifies the provided file name to include an asset tag.
-// The tag is based on a hash of the file contents.
+// Tag modifies the provided file name to include an asset tag preceding the
+// first dot. The tag is based on a hash of the file contents.
 // File names are slash-separated paths as given to the underlying [fs.FS].
 // If the name starts with a slash, it is removed before retrieving the file.
 func (s *Server) Tag(name string) (string, error) {
@@ -330,7 +330,7 @@ func (s *Server) readInfo(f seekerFile) (*fileInfo, error) {
 }
 
 const (
-	cacheControlUnversioned = "public, max-age=600"
+	cacheControlUnversioned = "public, max-age=60"
 	cacheControlVersioned   = "public, max-age=31536000, immutable"
 )
 
