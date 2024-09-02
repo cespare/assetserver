@@ -93,11 +93,11 @@ func (s *Server) Tag(name string) (string, error) {
 	// We place the tag before the first dot (rather than before the last
 	// dot) because files may have multiple extensions: "x.tar.gz",
 	// "lib.min.js", etc.
-	if i := strings.IndexByte(base, '.'); i >= 0 {
-		// name.xxxxxxxxxxxxx.ext
-		base = base[:i] + "." + info.tag + base[i:]
+	if head, tail, ok := strings.Cut(base, "."); ok {
+		// head.xxxxxxxxxxxxx.tail
+		base = head + "." + info.tag + "." + tail
 	} else {
-		// name.xxxxxxxxxxxxx
+		// head.xxxxxxxxxxxxx
 		base += "." + info.tag
 	}
 	tagged := path.Join(dir, base)
@@ -112,21 +112,21 @@ func (s *Server) Tag(name string) (string, error) {
 // If the name doesn't include a tag, removeTag returns "", s.
 func removeTag(s string) (tag, name string) {
 	dir, base := path.Split(s)
-	i := strings.IndexByte(base, '.')
-	if i < 0 {
+	head, tail, ok := strings.Cut(base, ".")
+	if !ok {
 		return "", s
 	}
-	if tag := base[i+1:]; isTag(tag) {
-		// name.xxxxxxxxxxxxxxxx
-		return tag, path.Join(dir, base[:i])
+	if isTag(tail) {
+		// head.xxxxxxxxxxxxxxxx
+		return tail, path.Join(dir, head)
 	}
-	j := strings.IndexByte(base[i+1:], '.')
-	if j < 0 {
+	tag, tail, ok = strings.Cut(tail, ".")
+	if !ok {
 		return "", s
 	}
-	if tag := base[i+1 : i+1+j]; isTag(tag) {
-		// name.xxxxxxxxxxxxxxxx.ext
-		return tag, path.Join(dir, base[:i]+base[i+1+j:])
+	if isTag(tag) {
+		// head.xxxxxxxxxxxxxxxx.tail
+		return tag, path.Join(dir, head+"."+tail)
 	}
 	return "", s
 }
@@ -219,8 +219,9 @@ func (s *Server) tryCachedInfo(name string) (*fileInfo, error) {
 
 // openWithInfo opens the named file and also retrieves its fileInfo summary,
 // from cache if possible.
-// The info matches the contents of the file as gauged by the size and mtime,
-// unless the file is changing as its being read (in which case all bets are off).
+// The info matches the contents of the file, as gauged by the size and mtime,
+// unless the file is changing as it is being read (in which case all bets are
+// off).
 func (s *Server) openWithInfo(name string) (f seekerFile, info *fileInfo, err error) {
 	fv, err := s.fsys.Open(name)
 	if err != nil {
@@ -356,9 +357,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h["Content-Type"] = nil // prevent ServeContent from sniffing
 		}
 	}
-
-	// TODO: After https://go.dev/issue/51971 is implemented, should
-	// we use http.ServeFileFS?
 
 	http.ServeContent(w, r, name, time.Unix(0, info.mtime), f)
 }
