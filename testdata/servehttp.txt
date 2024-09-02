@@ -74,3 +74,20 @@ code == 404
 
 GET /d/sub
 code == 404
+
+# Test redirects.
+
+GET /a.js/
+code == 308
+redirect == /a.js
+
+GET /d/style.css/
+code == 308
+redirect == /d/style.css
+
+GET /d/x/../style.css
+code == 308
+redirect == /d/style.css
+
+GET /d/noexist/
+code == 404

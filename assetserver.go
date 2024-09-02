@@ -320,17 +320,20 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "405 Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	name := r.URL.Path
-	if name == "/" || !strings.HasPrefix(name, "/") {
+	origPath := r.URL.Path
+	if origPath == "/" || !strings.HasPrefix(origPath, "/") {
 		http.NotFound(w, r)
 		return
 	}
-	name = path.Clean(name)[1:]
+	origPath = origPath[1:] // remove /
+	cleanPath := path.Clean(origPath)
+	if cleanPath == ".." || strings.HasPrefix(cleanPath, "../") {
+		http.NotFound(w, r)
+		return
+	}
 
-	var tag string
-	tag, name = removeTag(name)
-
-	f, info, err := s.openWithInfo(name)
+	tag, taglessPath := removeTag(cleanPath)
+	f, info, err := s.openWithInfo(taglessPath)
 	if err != nil {
 		writeFSError(w, r, err)
 		return
@@ -339,6 +342,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// If the tag is wrong/outdated, 404.
 	if tag != "" && tag != info.tag {
 		http.NotFound(w, r)
+		return
+	}
+
+	// Redirect un-clean paths to their canonical clean versions.
+	// In particular, this redirects trailing slashes (foo/ -> foo).
+	if origPath != cleanPath {
+		http.Redirect(w, r, "/"+cleanPath, http.StatusPermanentRedirect)
 		return
 	}
 
@@ -358,7 +368,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	http.ServeContent(w, r, name, time.Unix(0, info.mtime), f)
+	http.ServeContent(w, r, origPath, time.Unix(0, info.mtime), f)
 }
 
 func writeFSError(w http.ResponseWriter, r *http.Request, err error) {
