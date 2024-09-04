@@ -11,10 +11,15 @@ The assetserver package provides a file server designed for static assets.
 
 The simplest way to use it is as a replacement for `http.FileServer`:
 
-    assetSrv := assetserver.New(assetFS)
+    assets := assetserver.New(assetFS)
 
 where `assetFS` is an `embed.FS` or comes from `os.DirFS`. Then the main handler
-or muxer routes all requests with a prefix (say, `/static/`) to `assetSrv`.
+or muxer routes all requests with a prefix (say, `/static/`) to `assetSrv`. For
+example:
+
+    mux := http.NewServeMux()
+    mux.Handle("/static/", http.StripPrefix("/static/", assets))
+    // ... set up remaining routes ...
 
 Asset files that are served this way have two caching-related headers in the
 response:
@@ -49,7 +54,7 @@ template function:
 
 ``` go
 funcs := template.FuncMap{
-	"tag": assetSrv.Tag,
+	"tag": assets.Tag,
 }
 tmpl, err := template.New("").Funcs(funcs).Parse(tmplText)
 ...
@@ -58,8 +63,8 @@ tmpl, err := template.New("").Funcs(funcs).Parse(tmplText)
 Then the HTML template might contain:
 
 ```
-<link rel="stylesheet" href="{{tag "/static/css/style.css"}}">
-<script src="{{tag "/static/js/main.js"}}"></script>
+<link rel="stylesheet" href="/static/{{tag "css/style.css"}}">
+<script src="/static/{{tag "js/main.js"}}"></script>
 ```
 
 ## Comparison with `http.FileServer`
