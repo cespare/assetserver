@@ -94,6 +94,43 @@ func TestServeHTTPEmbed(t *testing.T) {
 	webtest.TestHandler(t, "testdata/servehttp.txt", s)
 }
 
+// The interaction of redirects and http.StripPrefix is a bit subtle, so test it
+// explicitly.
+func TestStripPrefix(t *testing.T) {
+	for _, p := range []struct {
+		name   string
+		prefix string
+	}{
+		{"no-trailing-slash", "/sub"},
+		{"trailing-slash", "/sub/"},
+	} {
+		t.Run(p.name, func(t *testing.T) {
+			h := http.StripPrefix(p.prefix, New(os.DirFS("testdata/assets")))
+			// Use a real server+client to test redirects.
+			s := httptest.NewServer(h)
+			t.Cleanup(s.Close)
+			for _, tt := range []struct {
+				pth  string
+				want string
+			}{
+				{"/sub/d/style.css", "style\n"},
+				{"/sub/d/style.css/", "style\n"},
+				{"/sub/xyz/../a.js/", "ajs\n"},
+			} {
+				t.Run(tt.pth, func(t *testing.T) {
+					resp, err := http.Get(s.URL + tt.pth)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer resp.Body.Close()
+					checkResponseCode(t, resp, 200)
+					checkResponseBody(t, resp, []byte(tt.want))
+				})
+			}
+		})
+	}
+}
+
 // This tests the case that files are changing and being requested by multiple
 // callers in parallel (so it's a good target for the race detector).
 func TestChangingFiles(t *testing.T) {
@@ -248,7 +285,7 @@ func checkResponseBody(t *testing.T, resp *http.Response, want []byte) {
 		// Shouldn't happen due to ResponseRecorder guarantees.
 		t.Fatalf("error reading response body: %s", err)
 	}
-	if diff := cmp.Diff(got, want); diff != "" {
+	if diff := cmp.Diff(string(got), string(want)); diff != "" {
 		t.Fatalf("wrong response body (-got, +want):\n%s", diff)
 	}
 }

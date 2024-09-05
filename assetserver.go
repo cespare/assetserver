@@ -320,20 +320,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "405 Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	origPath := r.URL.Path
-	if origPath == "/" || !strings.HasPrefix(origPath, "/") {
-		http.NotFound(w, r)
-		return
+
+	pth := r.URL.Path
+	if !strings.HasPrefix(pth, "/") {
+		pth = "/" + pth
+		r.URL.Path = pth
 	}
-	origPath = origPath[1:] // remove /
-	cleanPath := path.Clean(origPath)
-	if cleanPath == ".." || strings.HasPrefix(cleanPath, "../") {
+	pth = path.Clean(pth)
+
+	if pth == "/" {
 		http.NotFound(w, r)
 		return
 	}
 
-	tag, taglessPath := removeTag(cleanPath)
-	f, info, err := s.openWithInfo(taglessPath)
+	tag, taglessPath := removeTag(pth)
+	f, info, err := s.openWithInfo(taglessPath[1:]) // trim leading /
 	if err != nil {
 		writeFSError(w, r, err)
 		return
@@ -345,10 +346,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Redirect un-clean paths to their canonical clean versions.
-	// In particular, this redirects trailing slashes (foo/ -> foo).
-	if origPath != cleanPath {
-		http.Redirect(w, r, "/"+cleanPath, http.StatusPermanentRedirect)
+	// Redirect trailing slashes to no-slash paths.
+	if strings.HasSuffix(r.URL.Path, "/") {
+		// We cannot use http.Redirect because it changes the path to be
+		// absolute and that doesn't work if we're running under http.StripPrefix.
+		target := "../" + path.Base(pth)
+		if q := r.URL.RawQuery; q != "" {
+			target += "?" + q
+		}
+		w.Header().Set("Location", target)
+		w.WriteHeader(http.StatusPermanentRedirect)
 		return
 	}
 
@@ -368,7 +375,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	http.ServeContent(w, r, origPath, time.Unix(0, info.mtime), f)
+	http.ServeContent(w, r, pth, time.Unix(0, info.mtime), f)
 }
 
 func writeFSError(w http.ResponseWriter, r *http.Request, err error) {

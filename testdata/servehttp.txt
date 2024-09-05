@@ -16,6 +16,11 @@ header Cache-Control == public, max-age=60
 header ETag == "sI22qapGJ0"
 header Content-Type contains text/javascript
 
+GET a.js
+trimbody ==
+  ajs
+header Cache-Control == public, max-age=60
+
 GET /a.sI22qapGJ0.js
 trimbody ==
 	ajs
@@ -79,15 +84,20 @@ code == 404
 
 GET /a.js/
 code == 308
-redirect == /a.js
+redirect == ../a.js
+
+GET a.js/
+code == 308
+redirect == ../a.js
 
 GET /d/style.css/
 code == 308
-redirect == /d/style.css
+redirect == ../style.css
 
+# Note that browsers (and even curl) automatically clean request paths like this.
 GET /d/x/../style.css
-code == 308
-redirect == /d/style.css
+trimbody ==
+	style
 
 GET /d/noexist/
 code == 404
