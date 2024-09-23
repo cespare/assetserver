@@ -1,0 +1,27 @@
+GET /
+code == 404
+
+GET /noexist.txt
+code == 404
+
+GET /a.js
+trimbody ==
+	ajs
+header Cache-Control == no-cache
+header ETag == "sI22qapGJ0"
+header Content-Type contains text/javascript
+
+GET /a.js
+reqheader If-None-Match "sI22qapGJ0"
+header Cache-Control == no-cache
+code == 304
+
+GET /a.sI22qapGJ0.js
+trimbody ==
+	ajs
+header Cache-Control == no-cache
+header ETag == "sI22qapGJ0"
+header Content-Type contains text/javascript
+
+GET /a.sI22qapGJ1.js
+code == 404

@@ -93,6 +93,14 @@ information and this also makes it better-suited for serving static assets:
 * Internal errors (such as permission errors) are not exposed as HTTP errors;
   any internal error other than "not found" becomes a 500.
 
+## Local development with `NewNoCache`
+
+When running a server for local development, having assets be cached for even a
+minute is generally undesirable. For this use case, a "no-cache" `Server` can be
+constructed using `NewNoCache`. A `Server` created this way serves files with
+`Cache-Control: no-cache` so that the browser will revalidate the assets on
+every page load.
+
 ## Caveats
 
 The assetserver package is designed specifically to serve static web assets that

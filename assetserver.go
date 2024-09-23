@@ -30,7 +30,10 @@ import (
 //
 //	public, max-age=31536000, immutable
 //
-// In the following cases, Server returns a 404 Not Found response:
+// If the Server was created with NewNoCache, all assets are instead served
+// with Cache-Control: no-cache.
+//
+// In the following cases, Server sends a 404 Not Found response:
 //
 //   - If the requested file doesn't exist in the file system
 //   - If the requested file is a directory
@@ -39,7 +42,8 @@ import (
 //
 // For other errors, Server sends a 500 Internal Server Error response.
 type Server struct {
-	fsys fs.FS
+	fsys    fs.FS
+	noCache bool
 
 	// An rwmutex seems appropriate here: once we've loaded all the assets,
 	// we never lock the mutex again.
@@ -66,6 +70,16 @@ func New(fsys fs.FS) *Server {
 		fsys:  fsys,
 		cache: make(map[string]*atomic.Pointer[fileInfo]),
 	}
+}
+
+// NewNoCache is like New, but the returned Server serves all assets with
+// Cache-Control: no-cache.
+//
+// NewNoCache is intended for non-production settings (such as local development).
+func NewNoCache(fsys fs.FS) *Server {
+	s := New(fsys)
+	s.noCache = true
+	return s
 }
 
 // Tag modifies the provided file name to include an asset tag preceding the
@@ -308,11 +322,6 @@ func (s *Server) readInfo(f seekerFile) (*fileInfo, error) {
 	return fi, nil
 }
 
-const (
-	cacheControlUnversioned = "public, max-age=60"
-	cacheControlVersioned   = "public, max-age=31536000, immutable"
-)
-
 // ServeHTTP serves file system contents matching the request.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" && r.Method != "HEAD" {
@@ -360,11 +369,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h := w.Header()
-	if tag == "" {
-		h.Set("Cache-Control", cacheControlUnversioned)
+	var cc string
+	if s.noCache {
+		cc = "no-cache"
 	} else {
-		h.Set("Cache-Control", cacheControlVersioned)
+		if tag == "" {
+			cc = "public, max-age=60"
+		} else {
+			cc = "public, max-age=31536000, immutable"
+		}
 	}
+	h.Set("Cache-Control", cc)
 	h.Set("ETag", `"`+info.tag+`"`)
 	// Only set Content-Type if it wasn't set by the caller.
 	if _, ok := h["Content-Type"]; !ok {

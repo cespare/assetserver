@@ -94,6 +94,11 @@ func TestServeHTTPEmbed(t *testing.T) {
 	webtest.TestHandler(t, "testdata/servehttp.txt", s)
 }
 
+func TestServeHTTPNoCache(t *testing.T) {
+	s := NewNoCache(os.DirFS("testdata/assets"))
+	webtest.TestHandler(t, "testdata/nocache.txt", s)
+}
+
 // The interaction of redirects and http.StripPrefix is a bit subtle, so test it
 // explicitly.
 func TestStripPrefix(t *testing.T) {
