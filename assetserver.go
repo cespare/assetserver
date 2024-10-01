@@ -86,9 +86,14 @@ func NewNoCache(fsys fs.FS) *Server {
 // first dot. The tag is based on a hash of the file contents.
 // File names are slash-separated paths as given to the underlying [fs.FS].
 // If the name starts with a slash, it is removed before retrieving the file.
+//
+// If s is a no-cache server, Tag returns the original path so that the
+// application uses untagged names in a development environment. However, in
+// this case Tag still verifies that the file exists and can be read in order to
+// catch bugs.
 func (s *Server) Tag(name string) (string, error) {
-	var hadSlash bool
-	name, hadSlash = strings.CutPrefix(name, "/")
+	origName := name
+	name = strings.TrimPrefix(name, "/")
 	// Happy path: only call stat.
 	info, err := s.tryCachedInfo(name)
 	if err != nil {
@@ -103,6 +108,9 @@ func (s *Server) Tag(name string) (string, error) {
 		}
 		f.Close()
 	}
+	if s.noCache {
+		return origName, nil
+	}
 	dir, base := path.Split(name)
 	// We place the tag before the first dot (rather than before the last
 	// dot) because files may have multiple extensions: "x.tar.gz",
@@ -115,7 +123,7 @@ func (s *Server) Tag(name string) (string, error) {
 		base += "." + info.tag
 	}
 	tagged := path.Join(dir, base)
-	if hadSlash {
+	if strings.HasPrefix(origName, "/") {
 		tagged = "/" + tagged
 	}
 	return tagged, nil

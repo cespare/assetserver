@@ -101,6 +101,11 @@ constructed using `NewNoCache`. A `Server` created this way serves files with
 `Cache-Control: no-cache` so that the browser will revalidate the assets on
 every page load.
 
+Additionally, tagged names can be undesirable in development environments
+because these names interfere with developer tools that reload assets (such as
+CSS files) when they change. Therefore, for a no-cache server, the `Tag` method
+returns the untagged path.
+
 ## Caveats
 
 The assetserver package is designed specifically to serve static web assets that

@@ -45,6 +45,44 @@ func TestTag(t *testing.T) {
 	}
 }
 
+func TestTagNoCache(t *testing.T) {
+	s := NewNoCache(os.DirFS("testdata/assets"))
+	for _, name := range []string{
+		"d/style.css",
+		"/d/style.css",
+		"a.js",
+		"b.min.js",
+		"d/sub/noext",
+	} {
+		got, err := s.Tag(name)
+		if err != nil {
+			t.Fatalf("Tag(%q): %s", name, err)
+		}
+		if got != name {
+			t.Errorf("Tag(%q): got %q; want %[1]q", name, got)
+		}
+	}
+}
+
+func TestTagError(t *testing.T) {
+	s := New(os.DirFS("testdata/assets"))
+	// A no-cache server should give back the same errors even though it
+	// behaves as a no-op in the normal case.
+	noCache := NewNoCache(os.DirFS("testdata/assets"))
+	for _, name := range []string{
+		"nonexistent.css",
+		"d",
+		"d/sub",
+	} {
+		if _, err := s.Tag(name); err == nil {
+			t.Fatalf("Tag(%q): got nil error", name)
+		}
+		if _, err := noCache.Tag(name); err == nil {
+			t.Fatalf("no-cache Tag(%q): got nil error", name)
+		}
+	}
+}
+
 func TestRemoveTag(t *testing.T) {
 	for _, tt := range []struct {
 		s    string
