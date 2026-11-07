@@ -26,12 +26,16 @@ import (
 //   - The Cache-Control header is set to "public, max-age=60"
 //
 // If the requested file is tagged (see [Server.Tag]), the tag is removed before
-// the file is retrieved. Tagged files are served with a Cache-Control header of
+// the file is retrieved. By default, tagged files are served with this
+// Cache-Control header:
 //
 //	public, max-age=31536000, immutable
 //
-// If the Server was created with NewNoCache, all assets are instead served
-// with Cache-Control: no-cache.
+// If the Server was created with NewNoCache, the default Cache-Control policy
+// is instead "no-cache".
+//
+// A Cache-Control header set by the caller, including a nil or empty header,
+// takes precedence over these defaults.
 //
 // In the following cases, Server sends a 404 Not Found response:
 //
@@ -72,8 +76,8 @@ func New(fsys fs.FS) *Server {
 	}
 }
 
-// NewNoCache is like New, but the returned Server serves all assets with
-// Cache-Control: no-cache.
+// NewNoCache is like New, but the returned Server defaults to serving all assets
+// with Cache-Control: no-cache.
 //
 // NewNoCache is intended for non-production settings (such as local development).
 func NewNoCache(fsys fs.FS) *Server {
@@ -377,17 +381,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h := w.Header()
-	var cc string
-	if s.noCache {
-		cc = "no-cache"
+	if cc, ok := h["Cache-Control"]; ok {
+		w = cacheControlWriter{ResponseWriter: w, values: cc}
+	} else if s.noCache {
+		h.Set("Cache-Control", "no-cache")
+	} else if tag == "" {
+		h.Set("Cache-Control", "public, max-age=60")
 	} else {
-		if tag == "" {
-			cc = "public, max-age=60"
-		} else {
-			cc = "public, max-age=31536000, immutable"
-		}
+		h.Set("Cache-Control", "public, max-age=31536000, immutable")
 	}
-	h.Set("Cache-Control", cc)
 	h.Set("ETag", `"`+info.tag+`"`)
 	// Only set Content-Type if it wasn't set by the caller.
 	if _, ok := h["Content-Type"]; !ok {
@@ -399,6 +401,22 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.ServeContent(w, r, pth, time.Unix(0, info.mtime), f)
+}
+
+// ServeContent can delete Cache-Control on errors. Restore the caller's policy
+// when it commits the headers; it always calls WriteHeader before writing a body.
+type cacheControlWriter struct {
+	http.ResponseWriter
+	values []string
+}
+
+func (w cacheControlWriter) WriteHeader(code int) {
+	w.Header()["Cache-Control"] = w.values
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w cacheControlWriter) ReadFrom(r io.Reader) (int64, error) {
+	return io.Copy(w.ResponseWriter, r)
 }
 
 func writeFSError(w http.ResponseWriter, r *http.Request, err error) {

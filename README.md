@@ -25,7 +25,7 @@ Asset files that are served this way have two caching-related headers in the
 response:
 
 * `ETag` contains a hash of the file contents
-* `Cache-Control` is set to `public, max-age=60` (1 minute)
+* `Cache-Control` defaults to `public, max-age=60` (1 minute)
 
 This means that clients might cache the files for up to a minute before
 revalidating. Revalidation with `If-None-Match` is based on the file hash and
@@ -38,8 +38,8 @@ By writing a bit more code, assetserver can be used to implement a near-optimal
 caching strategy. Asset files may be referred to by *tagged* names: instead of,
 for example, `style.css`, the client might request `style.EI7Zfw9kFp.css`. The
 tag (`EI7Zfw9kFp`) is the same file hash in the `ETag` header. When the file
-changes, the tag changes. When a tagged file is served, the `Cache-Control`
-header is
+changes, the tag changes. When a tagged file is served, the default
+`Cache-Control` header is
 
     public, max-age=31536000, immutable
 
@@ -66,6 +66,30 @@ Then the HTML template might contain:
 <link rel="stylesheet" href="/static/{{tag "css/style.css"}}">
 <script src="/static/{{tag "js/main.js"}}"></script>
 ```
+
+## Custom cache policies
+
+To override the default caching policy, set `Cache-Control` before calling
+`ServeHTTP`:
+
+    w.Header().Set("Cache-Control", "private, no-cache")
+    assets.ServeHTTP(w, r)
+
+A caller-supplied policy is preserved on all responses, including tagged files,
+conditional responses (`304 Not Modified`), redirects, and errors. Multiple
+header values are preserved without merging or interpreting their directives.
+An explicitly nil or empty `Cache-Control` header entry suppresses the default.
+Tag validation, ETags, and conditional requests are unchanged.
+
+This also applies to servers created with `NewNoCache`: an explicit caller
+policy takes precedence over its `no-cache` default. Development callers should
+therefore avoid explicitly setting long-lived caching policies. `NewNoCache`
+still makes `Tag` return untagged paths regardless of the response policy.
+
+For protected content, `private, no-cache` allows browser storage but requires
+revalidation before reuse; `no-store` prohibits HTTP-cache storage. Authentication
+must run before assetserver so that conditional requests cannot bypass it.
+Assetserver does not authenticate requests itself.
 
 ## Comparison with `http.FileServer`
 
@@ -97,9 +121,9 @@ information and this also makes it better-suited for serving static assets:
 
 When running a server for local development, having assets be cached for even a
 minute is generally undesirable. For this use case, a "no-cache" `Server` can be
-constructed using `NewNoCache`. A `Server` created this way serves files with
-`Cache-Control: no-cache` so that the browser will revalidate the assets on
-every page load.
+constructed using `NewNoCache`. Unless the caller supplies a `Cache-Control`
+header, a `Server` created this way serves files with `Cache-Control: no-cache`
+so that the browser will revalidate the assets on every page load.
 
 Additionally, tagged names can be undesirable in development environments
 because these names interfere with developer tools that reload assets (such as
