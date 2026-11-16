@@ -53,7 +53,7 @@ type Server struct {
 
 type fileInfo struct {
 	// We assume the file is unchanged if the mtime+size are the same.
-	mtime int64 // as unix nano
+	mtime time.Time
 	size  int64
 
 	tag         string
@@ -233,7 +233,7 @@ func (s *Server) tryCachedInfo(name string) (*fileInfo, error) {
 		return nil, errNoInfo
 	}
 	info := p.Load()
-	if info == nil || fi.Size() != info.size || fi.ModTime().UnixNano() != info.mtime {
+	if info == nil || fi.Size() != info.size || !fi.ModTime().Equal(info.mtime) {
 		return nil, errNoInfo
 	}
 	return info, nil
@@ -276,7 +276,7 @@ func (s *Server) openWithInfo(name string) (f seekerFile, info *fileInfo, err er
 	}
 
 	info = p.Load()
-	if info != nil && fi.Size() == info.size && fi.ModTime().UnixNano() == info.mtime {
+	if info != nil && fi.Size() == info.size && fi.ModTime().Equal(info.mtime) {
 		return f, info, nil
 	}
 
@@ -299,7 +299,7 @@ func (s *Server) readInfo(f seekerFile) (*fileInfo, error) {
 		return nil, err
 	}
 	fi := &fileInfo{
-		mtime: stat.ModTime().UnixNano(),
+		mtime: stat.ModTime(),
 		size:  stat.Size(),
 	}
 
@@ -398,7 +398,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	http.ServeContent(w, r, pth, time.Unix(0, info.mtime), f)
+	http.ServeContent(w, r, pth, info.mtime, f)
 }
 
 func writeFSError(w http.ResponseWriter, r *http.Request, err error) {

@@ -314,6 +314,36 @@ func TestServeLargeFiles(t *testing.T) {
 	checkResponseHeader(t, resp, "ETag", `"`+tag+`"`)
 }
 
+func TestLastModified(t *testing.T) {
+	mtime, err := time.Parse(time.RFC3339, "2026-01-02T03:04:05Z")
+	if err != nil {
+		panic(err)
+	}
+	mapFS := fstest.MapFS{
+		"mtime.txt":   {Data: []byte("a\n"), ModTime: mtime},
+		"nomtime.txt": {Data: []byte("b\n")},
+	}
+	for _, tt := range []struct {
+		name string
+		fsys fs.FS
+		path string
+		want string
+	}{
+		{"mtime", mapFS, "/mtime.txt", "Fri, 02 Jan 2026 03:04:05 GMT"},
+		{"zero-mtime", mapFS, "/nomtime.txt", ""},
+		{"embed", embedFS, "/testdata/assets/a.js", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := New(tt.fsys)
+			w := httptest.NewRecorder()
+			s.ServeHTTP(w, httptest.NewRequest("GET", tt.path, nil))
+			resp := w.Result()
+			checkResponseCode(t, resp, 200)
+			checkResponseHeader(t, resp, "Last-Modified", tt.want)
+		})
+	}
+}
+
 func checkResponseCode(t *testing.T, resp *http.Response, want int) {
 	t.Helper()
 	if resp.StatusCode != want {
@@ -337,7 +367,7 @@ func checkResponseHeader(t *testing.T, resp *http.Response, header, want string)
 	t.Helper()
 	got := resp.Header.Get(header)
 	if got != want {
-		t.Fatalf("wrong value for header %q: want %q; got %q", header, got, want)
+		t.Fatalf("wrong value for header %q: got %q; want %q", header, got, want)
 	}
 }
 
