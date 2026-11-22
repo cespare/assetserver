@@ -132,6 +132,11 @@ func TestServeHTTPEmbed(t *testing.T) {
 	webtest.TestHandler(t, "testdata/servehttp.txt", s)
 }
 
+func TestServeHTTPPrivate(t *testing.T) {
+	s := NewPrivate(os.DirFS("testdata/assets"))
+	webtest.TestHandler(t, "testdata/private.txt", s)
+}
+
 func TestServeHTTPNoCache(t *testing.T) {
 	s := NewNoCache(os.DirFS("testdata/assets"))
 	webtest.TestHandler(t, "testdata/nocache.txt", s)

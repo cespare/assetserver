@@ -67,6 +67,28 @@ Then the HTML template might contain:
 <script src="/static/{{tag "js/main.js"}}"></script>
 ```
 
+## Private assets with `NewPrivate`
+
+The headers above allow shared caches, such as CDNs and caching proxies, to
+store assets. That is a problem if the assets require authentication and the
+authentication check happens behind such a cache: once an asset is cached, the
+cache serves it to anyone without consulting the server.
+
+For this use case, construct the `Server` using `NewPrivate`. A `Server` created
+this way behaves the same as one created by `New` except that it adds the
+`private` directive:
+
+    private, max-age=60
+    private, max-age=31536000, immutable
+
+Browsers cache these assets as before, but shared caches should not store them.
+(Check your CDN's configuration, though: some CDNs can be set up to cache
+responses regardless of `Cache-Control`.)
+
+`NewPrivate` is not needed if the assets aren't sensitive or if authentication
+is enforced by the CDN itself. A site with both public and private assets can
+use two `Server`s that handle separate routes.
+
 ## Comparison with `http.FileServer`
 
 The caching strategies described above are a significant advantage that

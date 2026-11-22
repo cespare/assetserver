@@ -30,6 +30,9 @@ import (
 //
 //	max-age=31536000, immutable
 //
+// If the Server was created with NewPrivate, the "private" directive is added
+// to these headers.
+//
 // If the Server was created with NewNoCache, all assets are instead served
 // with Cache-Control: no-cache.
 //
@@ -42,14 +45,22 @@ import (
 //
 // For other errors, Server sends a 500 Internal Server Error response.
 type Server struct {
-	fsys    fs.FS
-	noCache bool
+	fsys fs.FS
+	mode mode
 
 	// An rwmutex seems appropriate here: once we've loaded all the assets,
 	// we never lock the mutex again.
 	mu    sync.RWMutex
 	cache map[string]*atomic.Pointer[fileInfo]
 }
+
+type mode int
+
+const (
+	modeDefault mode = iota
+	modePrivate
+	modeNoCache
+)
 
 type fileInfo struct {
 	// We assume the file is unchanged if the mtime+size are the same.
@@ -72,13 +83,25 @@ func New(fsys fs.FS) *Server {
 	}
 }
 
+// NewPrivate is like New, but the returned Server adds the "private" directive
+// to the Cache-Control header so that assets are cached by browsers but not by
+// shared caches (such as CDNs).
+//
+// NewPrivate is intended for assets that are served behind an authentication
+// layer.
+func NewPrivate(fsys fs.FS) *Server {
+	s := New(fsys)
+	s.mode = modePrivate
+	return s
+}
+
 // NewNoCache is like New, but the returned Server serves all assets with
 // Cache-Control: no-cache.
 //
 // NewNoCache is intended for non-production settings (such as local development).
 func NewNoCache(fsys fs.FS) *Server {
 	s := New(fsys)
-	s.noCache = true
+	s.mode = modeNoCache
 	return s
 }
 
@@ -108,7 +131,7 @@ func (s *Server) Tag(name string) (string, error) {
 		}
 		f.Close()
 	}
-	if s.noCache {
+	if s.mode == modeNoCache {
 		return origName, nil
 	}
 	dir, base := path.Split(name)
@@ -378,14 +401,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	h := w.Header()
 	var cc string
-	if s.noCache {
+	switch {
+	case s.mode == modeNoCache:
 		cc = "no-cache"
-	} else {
-		if tag == "" {
-			cc = "max-age=60"
-		} else {
-			cc = "max-age=31536000, immutable"
-		}
+	case tag == "":
+		cc = "max-age=60"
+	default:
+		cc = "max-age=31536000, immutable"
+	}
+	if s.mode == modePrivate {
+		cc = "private, " + cc
 	}
 	h.Set("Cache-Control", cc)
 	h.Set("ETag", `"`+info.tag+`"`)
