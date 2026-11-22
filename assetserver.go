@@ -23,12 +23,12 @@ import (
 // cached effectively:
 //
 //   - The ETag header is set with a hash of the file contents
-//   - The Cache-Control header is set to "public, max-age=60"
+//   - The Cache-Control header is set to "max-age=60"
 //
 // If the requested file is tagged (see [Server.Tag]), the tag is removed before
 // the file is retrieved. Tagged files are served with a Cache-Control header of
 //
-//	public, max-age=31536000, immutable
+//	max-age=31536000, immutable
 //
 // If the Server was created with NewNoCache, all assets are instead served
 // with Cache-Control: no-cache.
@@ -382,9 +382,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		cc = "no-cache"
 	} else {
 		if tag == "" {
-			cc = "public, max-age=60"
+			cc = "max-age=60"
 		} else {
-			cc = "public, max-age=31536000, immutable"
+			cc = "max-age=31536000, immutable"
 		}
 	}
 	h.Set("Cache-Control", cc)

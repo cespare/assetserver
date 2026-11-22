@@ -25,7 +25,7 @@ Asset files that are served this way have two caching-related headers in the
 response:
 
 * `ETag` contains a hash of the file contents
-* `Cache-Control` is set to `public, max-age=60` (1 minute)
+* `Cache-Control` is set to `max-age=60` (1 minute)
 
 This means that clients might cache the files for up to a minute before
 revalidating. Revalidation with `If-None-Match` is based on the file hash and
@@ -41,7 +41,7 @@ tag (`EI7Zfw9kFp`) is the same file hash in the `ETag` header. When the file
 changes, the tag changes. When a tagged file is served, the `Cache-Control`
 header is
 
-    public, max-age=31536000, immutable
+    max-age=31536000, immutable
 
 This means that files will generally be cached for as long as possible because
 the content corresponding to a tagged name never changes.
