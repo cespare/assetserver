@@ -34,7 +34,7 @@ import (
 // to these headers.
 //
 // If the Server was created with NewNoCache, all assets are instead served
-// with Cache-Control: no-cache.
+// with Cache-Control: private, no-cache.
 //
 // In the following cases, Server sends a 404 Not Found response:
 //
@@ -96,9 +96,11 @@ func NewPrivate(fsys fs.FS) *Server {
 }
 
 // NewNoCache is like New, but the returned Server serves all assets with
-// Cache-Control: no-cache.
+// Cache-Control: private, no-cache. This prevents shared caches from storing
+// the responses and requires browsers to revalidate before reuse.
 //
-// NewNoCache is intended for non-production settings (such as local development).
+// This is useful when access to an asset must be checked on every request or
+// when edits should be visible immediately during local development.
 func NewNoCache(fsys fs.FS) *Server {
 	s := New(fsys)
 	s.mode = modeNoCache
@@ -110,10 +112,8 @@ func NewNoCache(fsys fs.FS) *Server {
 // File names are slash-separated paths as given to the underlying [fs.FS].
 // If the name starts with a slash, it is removed before retrieving the file.
 //
-// If s is a no-cache server, Tag returns the original path so that the
-// application uses untagged names in a development environment. However, in
-// this case Tag still verifies that the file exists and can be read in order to
-// catch bugs.
+// If s was created with [NewNoCache], Tag returns the original path but still
+// checks the file and reports errors as usual.
 func (s *Server) Tag(name string) (string, error) {
 	origName := name
 	name = strings.TrimPrefix(name, "/")
@@ -403,7 +403,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var cc string
 	switch {
 	case s.mode == modeNoCache:
-		cc = "no-cache"
+		cc = "private, no-cache"
 	case tag == "":
 		cc = "max-age=60"
 	default:

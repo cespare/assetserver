@@ -38,10 +38,9 @@ By writing a bit more code, assetserver can be used to implement a near-optimal
 caching strategy. Asset files may be referred to by *tagged* names: instead of,
 for example, `style.css`, the client might request `style.EI7Zfw9kFp.css`. The
 tag (`EI7Zfw9kFp`) is the same file hash in the `ETag` header. When the file
-changes, the tag changes. When a tagged file is served, the `Cache-Control`
-header is
+changes, the tag changes. When a tagged file is served, it gets:
 
-    max-age=31536000, immutable
+    Cache-Control: max-age=31536000, immutable
 
 This means that files will generally be cached for as long as possible because
 the content corresponding to a tagged name never changes.
@@ -78,8 +77,8 @@ For this use case, construct the `Server` using `NewPrivate`. A `Server` created
 this way behaves the same as one created by `New` except that it adds the
 `private` directive:
 
-    private, max-age=60
-    private, max-age=31536000, immutable
+    Cache-Control: private, max-age=60
+    Cache-Control: private, max-age=31536000, immutable
 
 Browsers cache these assets as before, but shared caches should not store them.
 (Check your CDN's configuration, though: some CDNs can be set up to cache
@@ -88,6 +87,42 @@ responses regardless of `Cache-Control`.)
 `NewPrivate` is not needed if the assets aren't sensitive or if authentication
 is enforced by the CDN itself. A site with both public and private assets can
 use two `Server`s that handle separate routes.
+
+## Revalidate on every use with `NewNoCache`
+
+Construct the `Server` with `NewNoCache` to serve assets with:
+
+    Cache-Control: private, no-cache
+
+This also prevents shared caches from storing the asset, and it further requires
+the browser to revalidate it every time before reuse.
+
+This is useful if access to an asset can be revoked, so the browser checks with
+the authentication layer before reusing the asset. If access is still allowed,
+and the asset hasn't changed, its ETag lets the server respond with
+`304 Not Modified`.
+
+Revalidation is also useful in local development (see below).
+
+## Local development with `assetserver`
+
+A typical pattern is to use NewNoCache in development mode:
+
+```
+var assets *assetserver.Server
+if prod {
+	assets = assetserver.New(fsys)
+} else {
+	assets = assetserver.NewNoCache(fsys)
+}
+```
+
+By using `no-cache` and revalidating every time, all local changes to your
+assets are picked up immediately during development. In production, assets are
+efficiently cached.
+
+With `NewNoCache`, `Tag` returns the original path, so tools that reload assets
+such as CSS files see a stable URL.
 
 ## Comparison with `http.FileServer`
 
@@ -114,19 +149,6 @@ information and this also makes it better-suited for serving static assets:
 * It does not serve `index.html` redirects
 * Internal errors (such as permission errors) are not exposed as HTTP errors;
   any internal error other than "not found" becomes a 500.
-
-## Local development with `NewNoCache`
-
-When running a server for local development, having assets be cached for even a
-minute is generally undesirable. For this use case, a "no-cache" `Server` can be
-constructed using `NewNoCache`. A `Server` created this way serves files with
-`Cache-Control: no-cache` so that the browser will revalidate the assets on
-every page load.
-
-Additionally, tagged names can be undesirable in development environments
-because these names interfere with developer tools that reload assets (such as
-CSS files) when they change. Therefore, for a no-cache server, the `Tag` method
-returns the untagged path.
 
 ## Caveats
 
